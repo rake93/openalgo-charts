@@ -29,6 +29,27 @@ export const DEFAULT_AXIS_STYLE: AxisStyle = {
   font: '11px system-ui, sans-serif',
 };
 
+/**
+ * Vertical room one price label wants, in media px. An 11px label occupies
+ * ~14px, so ~44 leaves clear air between neighbours without the axis becoming
+ * a ladder.
+ */
+const PRICE_LABEL_SPACING = 44;
+
+/**
+ * How many price labels a pane of this height should carry.
+ *
+ * This used to be a flat 6 regardless of size — right for a 250px indicator
+ * pane, far too sparse for an 800px price pane, where the axis read as five
+ * round numbers with everything interesting between them unlabelled. Deriving
+ * it from the height keeps the label rhythm steady at every pane size and every
+ * zoom level; `niceTicks` still rounds the step up the 1 → 2 → 2.5 → 5 → 10
+ * ladder, so the values stay round rather than becoming arbitrary.
+ */
+function priceTickCount(plotHeight: number): number {
+  return Math.max(2, Math.min(30, Math.round(plotHeight / PRICE_LABEL_SPACING)));
+}
+
 export interface PlotLayout {
   plotWidth: number;
   plotHeight: number;
@@ -47,7 +68,7 @@ export function drawPriceAxis(
   style: AxisStyle = DEFAULT_AXIS_STYLE,
 ): void {
   const range = priceScale.priceRange();
-  const ticks = niceTicks(range.min, range.max, 6);
+  const ticks = niceTicks(range.min, range.max, priceTickCount(layout.plotHeight));
   const xStart = Math.round(layout.plotWidth * dpr);
 
   ctx.save();
@@ -86,7 +107,7 @@ export function drawLeftPriceAxis(
   style: AxisStyle = DEFAULT_AXIS_STYLE,
 ): void {
   const range = priceScale.priceRange();
-  const ticks = niceTicks(range.min, range.max, 6);
+  const ticks = niceTicks(range.min, range.max, priceTickCount(plotHeight));
   const xEdge = Math.round(plotLeft * dpr);
 
   ctx.save();

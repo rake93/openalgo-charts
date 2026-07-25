@@ -562,12 +562,91 @@ export const MEASURE: DrawingTool = {
   distance: (x, y, h) => distToRect(x, y, h.pts[0], h.pts[1], true),
 };
 
+/** The numbers a long / short position calculator reports. */
+export interface PositionSizing {
+  /** Stop distance in price points. */
+  riskPoints: number;
+  /** Target distance in price points. */
+  rewardPoints: number;
+  /** reward ÷ risk; 0 when the stop sits on the entry. */
+  rr: number;
+  /** Contract multiplier in force (1 for cash). */
+  lotSize: number;
+  /** Whole lots the risk budget affords. Always 0 or more. */
+  lots: number;
+  /** Order quantity — `lots × lotSize` for derivatives, shares for cash. */
+  qty: number;
+  /** Currency at risk if the stop is hit. */
+  riskAmount: number;
+  /** Currency gained if the target is met. */
+  rewardAmount: number;
+  /** True when `qty` had to be capped by `maxQty` (an exchange freeze limit). */
+  capped: boolean;
+}
+
+/**
+ * Position size from a risk budget, respecting how the instrument trades.
+ *
+ * The budget is `accountSize × risk%`, and the stop distance is what spends it.
+ * Everything else is the market's rules:
+ *
+ *  - **Cash** (`lotSize` 1) sizes in whole shares.
+ *  - **Derivatives** — F&O, currency, commodity — trade in indivisible lots, so
+ *    the budget buys a whole number of lots and the quantity is `lots × lotSize`.
+ *    A budget that cannot afford one lot yields 0, which is the honest answer:
+ *    the trade is too big for the account at that stop.
+ *  - **`maxQty`** caps the result where the exchange caps a single order (the
+ *    NSE freeze quantity), rounded back down to a whole lot.
+ *
+ * Exported so a host can show the same numbers in its own panel without
+ * re-deriving them and drifting from what the chart draws.
+ */
+export function sizePosition(
+  entry: number,
+  target: number,
+  stop: number,
+  style: Pick<DrawingStyle, 'accountSize' | 'risk' | 'lotSize' | 'maxQty'>,
+): PositionSizing {
+  const riskPoints = Math.abs(entry - stop);
+  const rewardPoints = Math.abs(target - entry);
+  const rr = riskPoints > 0 ? rewardPoints / riskPoints : 0;
+  const lotSize = Math.max(1, Math.floor(style.lotSize ?? 1));
+  const budget = (style.accountSize ?? 0) * ((style.risk ?? 0) / 100);
+
+  let lots = 0;
+  if (riskPoints > 0 && budget > 0) {
+    lots = Math.floor(budget / (riskPoints * lotSize));
+  }
+  let qty = lots * lotSize;
+
+  const cap = style.maxQty ?? 0;
+  const capped = cap > 0 && qty > cap;
+  if (capped) {
+    // Round the cap down to a whole lot — a part lot is not sendable either.
+    lots = Math.floor(cap / lotSize);
+    qty = lots * lotSize;
+  }
+
+  return {
+    riskPoints,
+    rewardPoints,
+    rr,
+    lotSize,
+    lots,
+    qty,
+    riskAmount: qty * riskPoints,
+    rewardAmount: qty * rewardPoints,
+    capped,
+  };
+}
+
 /**
  * Long / short position calculator — entry, target, stop.
  *
  * One click places the whole thing at a 1:1 reward:risk and every anchor stays
  * draggable, so the tool opens with something to adjust rather than asking for
- * three clicks before it shows anything.
+ * three clicks before it shows anything. {@link sizePosition} turns the three
+ * prices into an order quantity the instrument can actually be traded in.
  */
 function positionTool(id: string, name: string, long: boolean): DrawingTool {
   return {
@@ -615,28 +694,33 @@ function positionTool(id: string, name: string, long: boolean): DrawingTool {
       }
       c.ctx.setLineDash([]);
       if (c.style.showLabels === false) return;
-      const risk = Math.abs(entry.price - stop.price);
-      const reward = Math.abs(target.price - entry.price);
-      const rr = risk > 0 ? reward / risk : 0;
-      // Position size from risk budget ÷ stop distance — the number a trader
-      // actually wants off this tool.
-      const account = c.style.accountSize ?? 0;
-      const riskPct = c.style.risk ?? 0;
-      const qty = risk > 0 && account > 0 ? Math.floor((account * riskPct / 100) / risk) : 0;
+      // Chip presentation from master; the quantity behind it from
+      // `sizePosition`, so a derivative sizes in whole lots and an exchange
+      // freeze limit caps it. The inline `budget ÷ stop` this replaced sized
+      // every instrument as though it traded in single units, which is wrong for
+      // every F&O, currency and commodity contract.
+      const size = sizePosition(entry.price, target.price, stop.price, c.style);
       const pctOf = (delta: number): string =>
         (entry.price !== 0 ? (delta / entry.price) * 100 : 0).toFixed(3);
-      const cash = (delta: number): string => (qty > 0 ? `, Amount: ${grouped(qty * delta)}` : '');
+      const cash = (delta: number): string =>
+        size.qty > 0 ? `, Amount: ${grouped(size.qty * delta)}` : '';
       const cx = (x0 + x1) / 2;
       // Each readout hugs its own line, on the outside of the box — the target
       // chip sits past the target line whichever side of entry it landed on, so
       // it reads the same for a long and an inverted-drag short.
-      chip(c, [`Target: ${c.formatPrice(reward)} (${pctOf(reward)}%)${cash(reward)}`],
+      chip(c, [`Target: ${c.formatPrice(size.rewardPoints)} (${pctOf(size.rewardPoints)}%)${cash(size.rewardPoints)}`],
         cx, yT, UP_TINT, { align: 'center', place: yT <= yE ? 'above' : 'below' });
-      chip(c, [`Stop: ${c.formatPrice(risk)} (${pctOf(risk)}%)${cash(risk)}`],
+      chip(c, [`Stop: ${c.formatPrice(size.riskPoints)} (${pctOf(size.riskPoints)}%)${cash(size.riskPoints)}`],
         cx, yS, DOWN_TINT, { align: 'center', place: yS >= yE ? 'below' : 'above' });
+      // Lots and the freeze cap only appear when they actually apply, so a cash
+      // instrument's chip reads exactly as it did before.
+      const lotText = size.lotSize > 1 && size.lots > 0
+        ? ` (${size.lots} lot${size.lots === 1 ? '' : 's'})`
+        : '';
+      const capText = size.capped ? ' · capped at freeze limit' : '';
       chip(c, [
-        `${long ? 'Long' : 'Short'} · Qty: ${qty > 0 ? grouped(qty) : '—'}`,
-        `Risk/reward ratio: ${rr.toFixed(2)}`,
+        `${long ? 'Long' : 'Short'} · Qty: ${size.qty > 0 ? grouped(size.qty) : '—'}${lotText}${capText}`,
+        `Risk/reward ratio: ${size.rr.toFixed(2)}`,
       ], cx, yE, c.rc.theme.background, { align: 'center', place: 'middle' });
     },
     distance: (x, y, h) => {

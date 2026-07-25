@@ -46,6 +46,8 @@ export {
   FIB_RETRACEMENT, FIB_EXTENSION,
   LONG_POSITION, SHORT_POSITION, MEASURE,
   TEXT, PATH,
+  sizePosition,
+  type PositionSizing,
 } from './tools';
 
 export { DrawingLayer } from './layer';

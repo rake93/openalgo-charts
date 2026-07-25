@@ -73,6 +73,20 @@ export interface DrawingStyle {
   /** Position tools: capital base and risk per trade, for the size readout. */
   accountSize?: number;
   risk?: number;
+  /**
+   * Position tools: contract multiplier. Derivatives trade in indivisible lots
+   * — NIFTY futures in 65 — so a size of "24" is not an order anyone can send.
+   * Above 1, the tool rounds down to whole lots and reports both the lot count
+   * and the resulting quantity. Defaults to 1 (cash, one unit per share).
+   */
+  lotSize?: number;
+  /**
+   * Position tools: exchange cap on a single order (the NSE freeze quantity).
+   * A computed size above it is clamped down to a whole lot and flagged.
+   */
+  maxQty?: number;
+  /** Position tools: prefix for money amounts in the readout, e.g. `₹`. */
+  currencyPrefix?: string;
 }
 
 export interface Drawing {
