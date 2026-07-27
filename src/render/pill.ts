@@ -41,7 +41,15 @@ export function luminance(color: string): number {
   return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
 }
 
-/** Legible text color (near-black or white) for the given fill. */
+/**
+ * Legible text color (near-black or white) for the given fill.
+ *
+ * The threshold is deliberately above the point where the two options contrast
+ * equally (L ≈ 0.179), which keeps white text on saturated accent fills — the
+ * buy/sell buttons and price-line pills want that. It does mean a mid-luminance
+ * fill (L ≈ 0.44) only reaches ~2.1:1, so do not feed this a ramp that lands
+ * there; pass the surface the ramp starts from instead.
+ */
 export function contrastText(bg: string): string {
   return luminance(bg) > 0.45 ? '#10131a' : '#ffffff';
 }

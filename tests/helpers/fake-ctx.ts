@@ -9,6 +9,10 @@ export interface Op {
   fillStyle?: string;
   strokeStyle?: string;
   lineWidth?: number;
+  /** Recorded on text ops so tests can assert the size actually drawn. */
+  font?: string;
+  /** The string passed to fillText, so tests can assert labels and totals. */
+  text?: string;
 }
 
 export class RecordingContext {
@@ -51,7 +55,7 @@ export class RecordingContext {
     this.ops.push({ type: 'createLinearGradient', args: [] });
     return { addColorStop: () => { this.ops.push({ type: 'addColorStop', args: [] }); } };
   }
-  public fillText(_t: string, x: number, y: number): void { this.ops.push({ type: 'fillText', args: [x, y], fillStyle: this.fillStyle }); }
+  public fillText(t: string, x: number, y: number): void { this.ops.push({ type: 'fillText', args: [x, y], fillStyle: this.fillStyle, font: this.font, text: t }); }
   public measureText(t: string): { width: number } { return { width: t.length * 6 }; }
   public setTransform(): void { this.ops.push({ type: 'setTransform', args: [] }); }
   public translate(x: number, y: number): void { this.ops.push({ type: 'translate', args: [x, y] }); }

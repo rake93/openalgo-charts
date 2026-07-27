@@ -79,6 +79,7 @@ export {
 } from './footprint-primitive';
 export {
   FootprintAggregator,
+  type FootprintAggregatorTimeframe,
   type FootprintTick,
   type FootprintUpdate,
 } from './footprint-aggregator';

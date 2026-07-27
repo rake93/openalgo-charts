@@ -17,10 +17,23 @@
  */
 import type { IPrimitive, PrimitiveHost, PrimitiveRenderContext, PrimitiveHit, ZOrder } from 'openalgo-charts';
 import type { FootprintBar, FootprintCell } from './profile-model';
-import { parseColor, withAlpha } from '../render/pill';
+import { contrastText, parseColor, withAlpha } from '../render/pill';
 
 /** Which metric a stats row shows. */
 export type FootprintStatRow = 'volume' | 'delta' | 'deltaPct' | 'cvd' | 'trades';
+
+/**
+ * Gutter names for the stats rows. Kept short because the gutter has to stay
+ * narrow enough not to eat a column, and `Δ` is the standard shorthand for delta
+ * on every order-flow platform.
+ */
+const STAT_LABEL: Record<FootprintStatRow, string> = {
+  volume: 'vol',
+  delta: 'Δ',
+  deltaPct: 'Δ%',
+  cvd: 'cvd',
+  trades: 'trd',
+};
 
 export type FootprintDisplayMode = 'bidask' | 'delta' | 'volume';
 
@@ -34,8 +47,19 @@ export interface FootprintOptions {
   widthFactor: number;
   /** Price step → row height. Inferred from the cell spacing when omitted. */
   tickSize?: number;
-  /** Cell text size in media px. Default 10. */
+  /**
+   * Smallest cell text size in media px. Default 10. The size actually drawn is
+   * fitted to each cell and clamped between this and {@link maxFont}.
+   */
   font: number;
+  /**
+   * Largest cell text size in media px. Default 18.
+   *
+   * Numbers scale with the cell rather than staying at one size, so zooming in
+   * makes a footprint more readable instead of only making the boxes bigger. Raise
+   * this if you read a footprint zoomed in; lower it to `font` to pin one size.
+   */
+  maxFont: number;
   /** Below this row height, numbers are dropped and cells render as a heatmap. */
   minTextHeight: number;
   /** Height (px) over which the cell numbers fade in around `minTextHeight`. */
@@ -50,6 +74,12 @@ export interface FootprintOptions {
   stackedImbalances: number;
   /** Stats rows under the columns, in order. Empty hides the table. */
   statsRows: readonly FootprintStatRow[];
+  /**
+   * Name each stats row in a gutter at the left of the table. Without it the rows
+   * are four unlabelled bands of numbers and the only way to tell delta from CVD
+   * is to remember the configured order.
+   */
+  statsLabels: boolean;
   /** Row height of the stats table in media px. */
   statsRowHeight: number;
   /** Draw the bar's range line + body behind the cells. */
@@ -67,6 +97,7 @@ export interface FootprintOptions {
 export const DEFAULT_FOOTPRINT_OPTIONS: FootprintOptions = {
   widthFactor: 0.9,
   font: 10,
+  maxFont: 18,
   minTextHeight: 11,
   textFade: 4,
   displayMode: 'bidask',
@@ -74,6 +105,7 @@ export const DEFAULT_FOOTPRINT_OPTIONS: FootprintOptions = {
   imbalanceThreshold: 0,
   stackedImbalances: 3,
   statsRows: ['volume', 'delta', 'deltaPct', 'cvd'],
+  statsLabels: true,
   statsRowHeight: 15,
   showCandle: true,
   showPoc: true,
@@ -228,11 +260,22 @@ export class Footprint implements IPrimitive {
     return Math.max(rh > 1 ? rh : 16 * rc.dpr, 6 * rc.dpr);
   }
 
-  /** Column width in device px — explicit, else derived from the bar spacing. */
+  /**
+   * Column width in device px — explicit, else the share of the bar slot that
+   * {@link FootprintOptions.widthFactor} allows.
+   *
+   * Never wider than the slot the bar owns. A floor above the slot width (this
+   * used to guarantee 24px) makes every column overlap its neighbours below about
+   * 27px of bar spacing, which is ordinary zoom: cells collide and two stats
+   * values print on top of each other. When the slot is genuinely too narrow for
+   * numbers the text is dropped instead and the column reads as a heatmap, which
+   * is legible where overlapping digits are not.
+   */
   private _columnWidth(rc: PrimitiveRenderContext): number {
     const o = this._opts;
     if (o.cellWidth !== undefined && o.cellWidth > 0) return o.cellWidth * rc.dpr;
-    return Math.max(24 * rc.dpr, rc.timeScale.barSpacing * o.widthFactor * rc.dpr);
+    const slot = rc.timeScale.barSpacing * rc.dpr;
+    return Math.max(rc.dpr, Math.min(slot, slot * o.widthFactor));
   }
 
   public draw(ctx: CanvasRenderingContext2D, rc: PrimitiveRenderContext): void {
@@ -288,22 +331,43 @@ export class Footprint implements IPrimitive {
     let peak = 1;
     for (const c of cells) peak = Math.max(peak, c.bidVol, c.askVol);
 
-    // Range line + body behind the cells: the bar is still a bar.
+    // Candle *behind* the cells: wick down the column's centre line, body across
+    // its full width, both translucent and both drawn before the cells so the
+    // numbers stay on top. The bar is still a bar.
+    //
+    // Direction comes from open/close when the host supplied them, and falls back
+    // to the sign of delta when it did not — a footprint bar on its own knows its
+    // traded range but not where it opened or closed.
     if (o.showCandle) {
       const yHi = rc.priceScale.priceToY(cells[0].price) * dpr - rowH / 2;
       const yLo = rc.priceScale.priceToY(cells[cells.length - 1].price) * dpr + rowH / 2;
-      const up = stats.delta >= 0;
-      ctx.fillStyle = withAlpha(up ? buy : sell, 0.5);
-      ctx.fillRect(x0 - 5 * dpr, yHi, 3 * dpr, yLo - yHi);
+      const hasBody = bar.open !== undefined && bar.close !== undefined;
+      const up = hasBody ? (bar.close as number) >= (bar.open as number) : stats.delta >= 0;
+      const tone = up ? buy : sell;
+
+      const wickW = Math.max(1, Math.round(dpr));
+      ctx.fillStyle = withAlpha(tone, 0.45);
+      ctx.fillRect(Math.round(col.x - wickW / 2), yHi, wickW, yLo - yHi);
+
+      if (hasBody) {
+        const yO = rc.priceScale.priceToY(bar.open as number) * dpr;
+        const yC = rc.priceScale.priceToY(bar.close as number) * dpr;
+        // Faint enough to read cells through, firm enough to see the bar's shape.
+        ctx.fillStyle = withAlpha(tone, 0.16);
+        ctx.fillRect(x0, Math.min(yO, yC), width, Math.max(1, Math.abs(yC - yO)));
+      }
     }
 
     const imbalanced = this._imbalances(cells);
     // 0 below the threshold, 1 a few px above it, linear between.
-    const textAlpha = Math.max(0, Math.min(1,
+    const fade = Math.max(0, Math.min(1,
       (rowH / dpr - o.minTextHeight) / Math.max(1, o.textFade) + 1));
-    const showText = textAlpha > 0;
-    if (showText) {
-      ctx.font = `${o.font * dpr}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+    const fitted = this._cellFont(cells, width, rowH, dpr);
+    // A null fit means the cell cannot hold a legible number, so the alpha the
+    // cells are drawn with goes to zero — `_cell` gates its text on that alone.
+    const textAlpha = fitted === null ? 0 : fade;
+    if (textAlpha > 0) {
+      ctx.font = `${fitted}px ui-monospace, SFMono-Regular, Menlo, monospace`;
       ctx.textAlign = 'center';
     }
 
@@ -325,8 +389,10 @@ export class Footprint implements IPrimitive {
       }
 
       if (o.showPoc && c.price === stats.poc) {
+        // Inside the column, not a tab hanging off its left edge: with columns now
+        // sized to the bar slot, anything outside reaches into the next bar.
         ctx.fillStyle = o.pocColor;
-        ctx.fillRect(x0 - 2 * dpr, top, 2 * dpr, h);
+        ctx.fillRect(x0, top, 2 * dpr, h);
       }
     }
 
@@ -347,6 +413,44 @@ export class Footprint implements IPrimitive {
     }
   }
 
+  /**
+   * Text size for one column's numbers, fitted to the box a cell actually has.
+   *
+   * A single fixed size made legibility purely a function of zoom: the cells grew
+   * but the numbers did not, so reading a footprint meant zooming until 10px text
+   * was a large enough share of the screen. Fitting to the cell means zooming in
+   * makes the numbers bigger, which is what a reader expects.
+   *
+   * Bounded by both axes — the widest label in the column has to fit across the
+   * cell (monospace advance is about 0.6em, so `n` glyphs need `n * 0.6 * size`)
+   * and to leave headroom inside the row. Capped at `maxFont` so it never grows
+   * into a cartoon on a heavily zoomed chart.
+   *
+   * Returns `null` when the cell cannot hold even `font`, the smallest size worth
+   * reading. Text is then dropped rather than scaled below legibility or, worse,
+   * drawn at a size that spills into the neighbouring column.
+   */
+  private _cellFont(
+    cells: readonly FootprintCell[], width: number, rowH: number, dpr: number,
+  ): number | null {
+    const o = this._opts;
+    // `bidask` splits the column in two; the other modes use the whole width.
+    const box = (o.displayMode === 'bidask' ? width / 2 : width) - 2 * dpr;
+    if (box <= 0) return null;
+    let chars = 1;
+    for (const c of cells) {
+      if (o.displayMode === 'bidask') {
+        chars = Math.max(chars, compactVol(c.bidVol).length, compactVol(c.askVol).length);
+      } else {
+        const v = o.displayMode === 'delta' ? c.askVol - c.bidVol : c.bidVol + c.askVol;
+        chars = Math.max(chars, compactVol(v).length);
+      }
+    }
+    const fit = Math.min(box / (0.6 * chars), rowH * 0.72);
+    if (fit < o.font * dpr) return null;
+    return Math.min(o.maxFont * dpr, fit);
+  }
+
   /** One filled, intensity-graded cell with its number. */
   private _cell(
     ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number,
@@ -357,15 +461,21 @@ export class Footprint implements IPrimitive {
     const t = peak > 0 ? value / peak : 0;
     // Saturated when imbalanced, otherwise a background→colour ramp. The eased
     // curve keeps low-volume rows visible instead of crushing them to black.
-    ctx.fillStyle = hot ? color : mix(bg, color, 0.08 + 0.62 * Math.sqrt(t));
+    const fill = hot ? color : mix(bg, color, 0.08 + 0.62 * Math.sqrt(t));
+    ctx.fillStyle = fill;
     const r = Math.min(this._opts.radius * dpr, h / 2, w / 2);
     ctx.beginPath();
     ctx.roundRect(x, y, w, h, r);
     ctx.fill();
     if (textAlpha <= 0) return;
+    // Contrast against the *surface*, not the individual fill. Every cell fill is
+    // a mix of the background toward the accent, so one choice made from the
+    // background is legible across the whole ramp (>= 3:1 in both themes),
+    // whereas judging each fill separately lands mid-ramp fills at ~2:1. The
+    // numerals used to be hardcoded white, which vanished on a light theme.
     // Fade rather than switch: zooming through the threshold reads as one
     // continuous change instead of numbers blinking on and off.
-    ctx.fillStyle = hot ? withAlpha('#0d0f14', textAlpha) : withAlpha('#ffffff', 0.9 * textAlpha);
+    ctx.fillStyle = withAlpha(contrastText(bg), (hot ? 1 : 0.9) * textAlpha);
     ctx.fillText(compactVol(display ?? value), x + w / 2, y + h / 2);
   }
 
@@ -429,10 +539,20 @@ export class Footprint implements IPrimitive {
       peak.set(row, m || 1);
     }
 
+    // The widest label decides whether any of them fit: a stats value drawn wider
+    // than its column lands over the neighbouring column's value, which is how
+    // "-10" and "+8.3%" ended up printed on top of each other.
+    let chars = 1;
+    for (const row of o.statsRows) {
+      for (const c of cols) chars = Math.max(chars, this._statText(this._metric(c.stats, row), row).length);
+    }
+    const fit = Math.min((width - 2 * dpr) / (0.6 * chars), (rowH - 2 * dpr) * 0.8);
+    const showText = fit >= (o.font - 2) * dpr;
+
     ctx.save();
     ctx.fillStyle = withAlpha(bg, 0.92);
     ctx.fillRect(0, top, rc.plotWidth * dpr, statsH);
-    ctx.font = `${(o.font - 0.5) * dpr}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+    ctx.font = `${Math.min((o.font - 0.5) * dpr, fit)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
@@ -453,10 +573,29 @@ export class Footprint implements IPrimitive {
         ctx.beginPath();
         ctx.roundRect(x, y + dpr, w, rowH - 2 * dpr, 2 * dpr);
         ctx.fill();
-        ctx.fillStyle = withAlpha('#ffffff', 0.92);
+        if (!showText) continue; // tint alone still reads as a heatmap
+        // Same reasoning as the cells: these tints are mixes off the background.
+        ctx.fillStyle = withAlpha(contrastText(bg), 0.92);
         ctx.fillText(this._statText(v, row), col.x, y + rowH / 2);
       }
     });
+
+    // Row names last, so they sit above any column value that reaches the gutter,
+    // on their own opaque backing.
+    if (o.statsLabels) {
+      const labelFont = Math.min((o.font - 1) * dpr, rowH * 0.6);
+      ctx.font = `${labelFont}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+      ctx.textAlign = 'left';
+      o.statsRows.forEach((row, r) => {
+        const y = top + r * rowH;
+        const text = STAT_LABEL[row];
+        ctx.fillStyle = withAlpha(bg, 0.95);
+        ctx.fillRect(0, y + dpr, (text.length * 0.6 * labelFont) + 4 * dpr, rowH - 2 * dpr);
+        ctx.fillStyle = withAlpha(contrastText(bg), 0.7);
+        ctx.fillText(text, 2 * dpr, y + rowH / 2);
+      });
+      ctx.textAlign = 'center';
+    }
     ctx.restore();
   }
 

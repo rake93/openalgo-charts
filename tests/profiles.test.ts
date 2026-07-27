@@ -1,4 +1,5 @@
-import { darkTheme } from '../src/theme';
+import { darkTheme, lightTheme } from '../src/theme';
+import { luminance } from '../src/render/pill';
 import { describe, it, expect } from 'vitest';
 import { computeVolumeProfile } from '../src/profile/volume-profile';
 import { computeTpo } from '../src/profile/tpo';
@@ -6,7 +7,7 @@ import {
   computeFootprint, diagonalImbalances, cumulativeDelta, stackedImbalances, type ClassifiedTrade,
 } from '../src/profile/footprint';
 import { HorizontalProfile } from '../src/profile/profile-primitive';
-import { Footprint, compactVol } from '../src/profile/footprint-primitive';
+import { Footprint, compactVol, type FootprintStatRow } from '../src/profile/footprint-primitive';
 import { FootprintAggregator } from '../src/profile/footprint-aggregator';
 import { priceBuckets } from '../src/profile/profile-model';
 import type { Bar } from '../src/model/bar';
@@ -127,6 +128,26 @@ describe('profile primitives render', () => {
     return { timeScale, priceScale, dataLayer: dl, plotWidth: 600, plotHeight: 400, priceAxisWidth: 56, dpr: 1, theme: darkTheme };
   }
 
+  /**
+   * A context with room for text: wide columns over a narrow price range, i.e. a
+   * footprint as it is actually read. `rc()` spans 5 points at a 0.05 tick, so its
+   * rows are ~6px and no number can legibly fit — fine for geometry assertions,
+   * useless for anything about the numbers themselves.
+   */
+  function roomyRc(theme = darkTheme): PrimitiveRenderContext {
+    const dl = new DataLayer();
+    const id = dl.createSeries();
+    dl.setSeriesData(id, [bar(1, 100, 101, 99, 100, 10), bar(2, 100, 101, 99, 100, 10)]);
+    const priceScale = new PriceScale();
+    priceScale.setHeight(400);
+    priceScale.setPriceRange({ min: 99.8, max: 100.2 });
+    const timeScale = new TimeScale();
+    timeScale.setWidth(600);
+    timeScale.setBaseIndex(dl.baseIndex);
+    timeScale.setBarSpacing(90);
+    return { timeScale, priceScale, dataLayer: dl, plotWidth: 600, plotHeight: 400, priceAxisWidth: 56, dpr: 1, theme };
+  }
+
   it('HorizontalProfile draws bars + POC/VA lines', () => {
     const hp = new HorizontalProfile({
       buckets: [{ price: 100, value: 50 }, { price: 100.5, value: 20 }, { price: 101, value: 5 }],
@@ -139,12 +160,249 @@ describe('profile primitives render', () => {
   });
 
   it('Footprint draws cells aligned to chart bars', () => {
-    const r = rc();
+    const r = roomyRc();
     const fp = new Footprint();
     fp.setBars([computeFootprint(1, [{ price: 100, qty: 5, side: 'ask' }, { price: 100, qty: 2, side: 'bid' }], 0.05)]);
     const { ctx, rec } = makeCtx();
     fp.draw(ctx, r);
     expect(rec.count('fillText')).toBeGreaterThan(0);
+  });
+
+  // `Footprint` positions columns by exact time match, so a self-timed
+  // tick-count bar — stamped with the raw time of the tick that opened it — is
+  // silently dropped. `bar` mode takes the chart's own bar time instead, which
+  // is the only way the two grids stay aligned.
+  it('Footprint draws bars aggregated on the chart bar clock', () => {
+    const dl = new DataLayer();
+    const id = dl.createSeries();
+    // Two 1-minute bars, as the chart would have them.
+    dl.setSeriesData(id, [bar(60, 100, 101, 99, 100, 10), bar(120, 100, 101, 99, 100, 10)]);
+    const priceScale = new PriceScale();
+    priceScale.setHeight(400);
+    priceScale.setPriceRange({ min: 98, max: 103 });
+    const timeScale = new TimeScale();
+    timeScale.setWidth(600);
+    timeScale.setBaseIndex(dl.baseIndex);
+    const r: PrimitiveRenderContext = { timeScale, priceScale, dataLayer: dl, plotWidth: 600, plotHeight: 400, priceAxisWidth: 56, dpr: 1, theme: darkTheme };
+
+    // The host stamps every tick with the chart bar it landed in, so ticks
+    // arriving at 137s and 138s both belong to the 120s bar.
+    const agg = new FootprintAggregator({ mode: 'bar' }, 0.05, 1);
+    agg.onTick({ time: 120, price: 100, qty: 5, side: 'ask' });
+    const u = agg.onTick({ time: 120, price: 100, qty: 2, side: 'bid' });
+    expect(u.isNew).toBe(false); // same chart bar → same column
+    expect(u.bar.time).toBe(120);
+
+    const fp = new Footprint();
+    fp.setBars([u.bar]);
+    const { ctx, rec } = makeCtx();
+    fp.draw(ctx, r);
+    // A column resolved to a chart bar and was drawn. Asserting the cells rather
+    // than their numbers keeps this test about placement — whether the numbers fit
+    // is a separate question, settled by the column width and row height.
+    expect(rec.count('roundRect')).toBeGreaterThan(0);
+  });
+
+  it('FootprintAggregator opens a new column when the chart bar advances', () => {
+    const agg = new FootprintAggregator({ mode: 'bar' }, 0.05, 1);
+    expect(agg.onTick({ time: 60, price: 100, qty: 5, side: 'ask' }).isNew).toBe(true);
+    expect(agg.onTick({ time: 60, price: 100, qty: 1, side: 'bid' }).isNew).toBe(false);
+    const next = agg.onTick({ time: 120, price: 101, qty: 3, side: 'ask' });
+    expect(next.isNew).toBe(true);
+    expect(next.bar.time).toBe(120);
+    expect(next.bar.delta).toBe(3); // fresh column, not carried over
+  });
+
+  // Cell and stats fills are a background→accent ramp, so on a light theme they
+  // come out as pale tints of white. The numerals used to be hardcoded white,
+  // which made them invisible there. What matters is not that the text is dark
+  // or light but that it contrasts with the fill actually painted under it, so
+  // that is what this asserts — in both themes, over cells and stats alike.
+  for (const [name, theme] of [['light', lightTheme], ['dark', darkTheme]] as const) {
+    it(`Footprint numbers contrast with their own fill on the ${name} theme`, () => {
+      const fp = new Footprint({ tickSize: 0.05, statsRows: ['volume', 'delta', 'cvd'] })
+      fp.setBars([
+        computeFootprint(1, [
+          { price: 100, qty: 5, side: 'ask' },
+          { price: 100, qty: 2, side: 'bid' },
+          // A big print one row up becomes the peak, so the cells at 100 stay
+          // near the pale end of the ramp — the case that used to break.
+          { price: 100.05, qty: 900, side: 'ask' },
+          { price: 100.05, qty: 1, side: 'bid' },
+        ], 0.05),
+      ])
+      const { ctx, rec } = makeCtx()
+      fp.draw(ctx, roomyRc(theme))
+
+      // Ops run beginPath → roundRect → fill(background) → fillText(text), so
+      // the last fill before each fillText is what the text sits on.
+      let under: string | null = null
+      let checked = 0
+      for (const op of rec.ops) {
+        if (op.type === 'fill' || op.type === 'fillRect') under = op.fillStyle ?? under
+        if (op.type !== 'fillText') continue
+        expect(under).not.toBeNull()
+        const a = luminance(op.fillStyle ?? '#fff')
+        const b = luminance(under as string)
+        // WCAG contrast ratio; 3:1 is the floor for large/bold text. The bound is
+        // 2.9 rather than 3.0 because a saturated *imbalanced* cell is filled with
+        // the theme's own accent — white on the dark theme's buy green is 3.00:1 to
+        // three figures, so the accent itself sets the floor and there is nothing
+        // for this primitive to fix. Everything else clears it comfortably.
+        const ratio = (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)
+        expect(ratio).toBeGreaterThanOrEqual(2.9)
+        checked += 1
+      }
+      expect(checked).toBeGreaterThan(0)
+    })
+  }
+
+  // Zooming in enlarges the cells, so the numbers in them should grow too.
+  // A fixed font meant the only way to read a footprint was to zoom until the
+  // 10px text was a large enough share of the screen, which is a lot of zoom.
+  it('Footprint scales its numbers to the space a cell actually has', () => {
+    const bars = [
+      computeFootprint(1, [
+        { price: 100, qty: 500, side: 'ask' },
+        { price: 100, qty: 200, side: 'bid' },
+      ], 0.05),
+    ]
+    const sizeAt = (barSpacing: number, priceSpan: number) => {
+      const dl = new DataLayer()
+      const id = dl.createSeries()
+      dl.setSeriesData(id, [bar(1, 100, 101, 99, 100, 10), bar(2, 100, 101, 99, 100, 10)])
+      const priceScale = new PriceScale()
+      priceScale.setHeight(400)
+      priceScale.setPriceRange({ min: 100 - priceSpan / 2, max: 100 + priceSpan / 2 })
+      const timeScale = new TimeScale()
+      timeScale.setWidth(600)
+      timeScale.setBaseIndex(dl.baseIndex)
+      timeScale.setBarSpacing(barSpacing)
+      const fp = new Footprint({ tickSize: 0.05, statsRows: [] })
+      fp.setBars(bars)
+      const { ctx, rec } = makeCtx()
+      fp.draw(ctx, {
+        timeScale, priceScale, dataLayer: dl, plotWidth: 600, plotHeight: 400,
+        priceAxisWidth: 56, dpr: 1, theme: darkTheme,
+      })
+      const t = rec.ops.find((o) => o.type === 'fillText')
+      return t?.font === undefined ? 0 : Number.parseFloat(t.font)
+    }
+
+    // Tight: modest column over a modest price range — small cells, but still
+    // big enough that the numbers are drawn at all.
+    const tight = sizeAt(60, 1.0)
+    // Roomy: a wide column over a narrow price range — big cells.
+    const roomy = sizeAt(120, 0.4)
+
+    expect(tight).toBeGreaterThan(0)
+    expect(roomy).toBeGreaterThan(tight)
+  })
+
+  /** Draw two adjacent footprint columns at a given bar spacing. */
+  function twoColumns(barSpacing: number, statsRows: FootprintStatRow[] = []) {
+    const dl = new DataLayer()
+    const id = dl.createSeries()
+    dl.setSeriesData(id, [bar(1, 100, 101, 99, 100, 10), bar(2, 100, 101, 99, 100, 10)])
+    const priceScale = new PriceScale()
+    priceScale.setHeight(400)
+    priceScale.setPriceRange({ min: 99.5, max: 100.5 })
+    const timeScale = new TimeScale()
+    timeScale.setWidth(600)
+    timeScale.setBaseIndex(dl.baseIndex)
+    timeScale.setBarSpacing(barSpacing)
+    // Gutter labels off: these cases count the per-column numbers, and a row name
+    // is drawn whether or not the columns are wide enough for their values.
+    const fp = new Footprint({ tickSize: 0.05, statsRows, statsLabels: false })
+    fp.setBars([
+      computeFootprint(1, [{ price: 100, qty: 1000, side: 'ask' }], 0.05),
+      computeFootprint(2, [{ price: 100, qty: 2000, side: 'bid' }], 0.05),
+    ])
+    const { ctx, rec } = makeCtx()
+    fp.draw(ctx, {
+      timeScale, priceScale, dataLayer: dl, plotWidth: 600, plotHeight: 400,
+      priceAxisWidth: 56, dpr: 1, theme: darkTheme,
+    })
+    return { rec, x1: timeScale.indexToX(0), x2: timeScale.indexToX(1) }
+  }
+
+  // A column wider than the bar slot lands on top of its neighbours: cells
+  // collide and, worse, two stats values print over each other. The 24px floor
+  // guaranteed that below ~27px of bar spacing, which is ordinary zoom.
+  it('Footprint keeps a column inside its own bar slot', () => {
+    for (const barSpacing of [8, 12, 17, 24, 40]) {
+      const { rec, x1, x2 } = twoColumns(barSpacing)
+      const boxes = rec.ops.filter((o) => o.type === 'roundRect')
+      expect(boxes.length).toBeGreaterThan(0)
+      const mid = (x1 + x2) / 2
+      for (const b of boxes) {
+        const [x, , w] = b.args
+        // Every box belongs to one column or the other, never straddling.
+        const belongsLeft = x + w <= mid + 0.5
+        const belongsRight = x >= mid - 0.5
+        expect(
+          belongsLeft || belongsRight,
+          `barSpacing ${barSpacing}: box ${x}..${x + w} straddles ${mid}`,
+        ).toBe(true)
+      }
+    }
+  })
+
+  it('Footprint drops the numbers when a cell is too narrow to hold them', () => {
+    // Tall rows, but a column far too narrow for even one digit: it should read
+    // as a heatmap rather than print text over the neighbouring column.
+    const narrow = twoColumns(8, ['volume', 'delta'])
+    expect(narrow.rec.count('roundRect')).toBeGreaterThan(0)
+    expect(narrow.rec.count('fillText')).toBe(0)
+
+    // Given room, the numbers come back.
+    const wide = twoColumns(90, ['volume', 'delta'])
+    expect(wide.rec.count('fillText')).toBeGreaterThan(0)
+  })
+
+  // "Candle behind the cells" drew a 3px sliver five pixels to the *left* of the
+  // column and never a body at all, so it read as a stray line beside the
+  // footprint rather than a candle behind it — and at narrow bar spacing it landed
+  // in the neighbouring bar's slot.
+  it('Footprint draws the candle behind the cells, not beside them', () => {
+    const r = roomyRc();
+    const fp = new Footprint({ tickSize: 0.05, statsRows: [], showCandle: true });
+    const fpBar = computeFootprint(1, [
+      { price: 100.1, qty: 5, side: 'ask' },
+      { price: 99.9, qty: 5, side: 'bid' },
+    ], 0.05);
+    fp.setBars([{ ...fpBar, open: 99.95, close: 100.05 }]);
+    const { ctx, rec } = makeCtx();
+    fp.draw(ctx, r);
+
+    const colX = r.timeScale.indexToX(0);
+    const half = (r.timeScale.barSpacing * 0.9) / 2;
+    const rects = rec.ops.filter((o) => o.type === 'fillRect');
+    expect(rects.length).toBeGreaterThan(0);
+    // Every part of the candle sits inside the column, centred on the bar. The
+    // tolerance covers the column centre being rounded to a whole device pixel.
+    for (const q of rects) {
+      const [x, , w] = q.args;
+      expect(x).toBeGreaterThanOrEqual(colX - half - 1.5);
+      expect(x + w).toBeLessThanOrEqual(colX + half + 1.5);
+    }
+    // A body is drawn, spanning open→close rather than only the range.
+    const yOpen = r.priceScale.priceToY(99.95);
+    const yClose = r.priceScale.priceToY(100.05);
+    const bodyH = Math.abs(yOpen - yClose);
+    expect(rects.some((q) => Math.abs(q.args[3] - bodyH) < 1.5)).toBe(true);
+  });
+
+  it('Footprint labels each stats row so the numbers can be told apart', () => {
+    const r = roomyRc();
+    const fp = new Footprint({ tickSize: 0.05, statsRows: ['volume', 'delta', 'cvd'] });
+    fp.setBars([computeFootprint(1, [{ price: 100, qty: 7, side: 'ask' }], 0.05)]);
+    const { ctx, rec } = makeCtx();
+    fp.draw(ctx, r);
+
+    // One left-aligned label per configured row, drawn in the stats gutter.
+    const labels = rec.ops.filter((o) => o.type === 'fillText' && o.args[0] < 20);
+    expect(labels.length).toBe(3);
   });
 
   it('Footprint fills diagonal imbalances saturated rather than outlining them', () => {
@@ -203,14 +461,18 @@ describe('profile primitives render', () => {
   });
 
   it('Footprint draws one stats row per configured metric', () => {
-    const r = rc();
+    // Needs the roomy context: stats values are now dropped rather than drawn
+    // over the neighbouring column when they cannot fit.
+    const r = roomyRc();
     const bars = [computeFootprint(1, [{ price: 100, qty: 5, side: 'ask' }], 0.05)];
     const none = new Footprint({ tickSize: 0.05, statsRows: [] });
     none.setBars(bars);
     const a = makeCtx();
     none.draw(a.ctx, r);
 
-    const four = new Footprint({ tickSize: 0.05, statsRows: ['volume', 'delta', 'deltaPct', 'cvd'] });
+    // Labels off so this counts values only — the gutter names are covered by
+    // their own test.
+    const four = new Footprint({ tickSize: 0.05, statsLabels: false, statsRows: ['volume', 'delta', 'deltaPct', 'cvd'] });
     four.setBars(bars);
     const b = makeCtx();
     four.draw(b.ctx, r);
@@ -239,12 +501,14 @@ describe('profile primitives render', () => {
     const roomy = new Footprint({ tickSize: 0.05, statsRows: [], minTextHeight: 1 });
     roomy.setBars(bars);
     const a = makeCtx();
-    roomy.draw(a.ctx, rc());
+    // Roomy context so the row height is the only thing under test — a cramped
+    // column would suppress the numbers on width alone.
+    roomy.draw(a.ctx, roomyRc());
 
     const cramped = new Footprint({ tickSize: 0.05, statsRows: [], minTextHeight: 10000 });
     cramped.setBars(bars);
     const b = makeCtx();
-    cramped.draw(b.ctx, rc());
+    cramped.draw(b.ctx, roomyRc());
     expect(a.rec.count('fillText')).toBeGreaterThan(0);
     expect(b.rec.count('fillText')).toBe(0);   // heatmap only
     expect(b.rec.count('roundRect')).toBeGreaterThan(0);

@@ -33,6 +33,15 @@ export interface FootprintBar {
   cells: FootprintCell[]; // sorted high → low price
   /** Net delta = Σ(askVol − bidVol). */
   delta: number;
+  /**
+   * The chart bar's open and close, when the host supplies them.
+   *
+   * The cells give the traded range but say nothing about where the bar opened or
+   * closed, so without these `showCandle` can only draw the range. The host has
+   * the OHLC, and footprint times are chart bar times, so the lookup is exact.
+   */
+  open?: number;
+  close?: number;
 }
 
 /** Bucket a price to the tick grid. */
