@@ -21,6 +21,13 @@ export interface Bar {
    * two — neither is expressible with one colour for the whole series.
    */
   color?: string;
+  /**
+   * Open interest as of the bar's close. Derivatives only — absent on equity and
+   * indices, and absent from feeds that do not report it. Unlike volume this is a
+   * *level* rather than a quantity accumulated across the bar, so resampling takes
+   * the last value in a bucket instead of summing.
+   */
+  oi?: number;
 }
 
 /** A single value point (for line/area/baseline series). */

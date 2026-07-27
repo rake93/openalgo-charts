@@ -28,6 +28,58 @@ describe('OpenAlgo WS — pure helpers (documented protocol)', () => {
     expect(parseMessage({ foo: 1 })).toBeNull();
     expect(parseMessage('nope')).toBeNull();
   });
+
+  // The live footprint classifies prints from the depth stream: a tradeable
+  // symbol subscribes to Depth alone, so the last-traded quantity has to travel
+  // on the depth event or the order flow has nothing to accumulate.
+  it('carries the last-traded quantity on a depth event', () => {
+    const depthOf = (extra: Record<string, unknown>) => {
+      const r = parseMessage({ type: 'market_data', mode: 3, data: { symbol: 'SBIN', exchange: 'NSE', ltp: 100.05, ...extra, depth: { buy: [{ price: 100, quantity: 50 }], sell: [{ price: 100.05, quantity: 40 }] } } });
+      return r?.kind === 'depth' ? r.depth : null;
+    };
+    // The three spellings the broker adapters emit.
+    expect(depthOf({ last_quantity: 25 })?.ltq).toBe(25);
+    expect(depthOf({ last_trade_quantity: 25 })?.ltq).toBe(25);
+    expect(depthOf({ ltq: 25 })?.ltq).toBe(25);
+    // Absent stays absent — a missing field must not read as a zero-qty print.
+    expect(depthOf({})?.ltq).toBeUndefined();
+  });
+
+  // The direction readout is built on fields the exchange states outright, so
+  // they have to survive the parse boundary rather than being dropped like ltq
+  // was. All of them ride on the depth payload, which is the only subscription a
+  // tradeable symbol has.
+  it('carries open interest, book pressure and VWAP on a depth event', () => {
+    const depthOf = (extra: Record<string, unknown>) => {
+      const r = parseMessage({ type: 'market_data', mode: 3, data: { symbol: 'X', exchange: 'NFO', ltp: 100, ...extra, depth: { buy: [{ price: 99, quantity: 5 }], sell: [{ price: 101, quantity: 6 }] } } });
+      return r?.kind === 'depth' ? r.depth : null;
+    };
+    const full = depthOf({ oi: 12_000_000, total_buy_quantity: 1400, total_sell_quantity: 1200, average_price: 99.5 });
+    expect(full?.oi).toBe(12_000_000);
+    expect(full?.totalBuyQty).toBe(1400);
+    expect(full?.totalSellQty).toBe(1200);
+    expect(full?.atp).toBe(99.5);
+
+    // Spelling variants the adapters use.
+    expect(depthOf({ open_interest: 7 })?.oi).toBe(7);
+    expect(depthOf({ atp: 99.25 })?.atp).toBe(99.25);
+
+    // Absent stays absent. A missing OI is not an OI of zero, and reading it as
+    // one would make the buildup signal claim "no change" instead of "unknown".
+    const bare = depthOf({});
+    expect(bare?.oi).toBeUndefined();
+    expect(bare?.totalBuyQty).toBeUndefined();
+    expect(bare?.totalSellQty).toBeUndefined();
+    expect(bare?.atp).toBeUndefined();
+  });
+
+  // `last_quantity` is what most broker adapters emit (Zerodha, Angel snap-quote,
+  // Flattrade, Shoonya, ...); the parser only knew the other two spellings.
+  it('accepts last_quantity as the last-traded quantity on an LTP event', () => {
+    const r = parseMessage({ type: 'market_data', mode: 2, data: { symbol: 'SBIN', exchange: 'NSE', ltp: 772.5, last_quantity: 15 } });
+    expect(r?.kind).toBe('ltp');
+    if (r?.kind === 'ltp') expect(r.event.ltq).toBe(15);
+  });
 });
 
 describe('OpenAlgo WS — feed with injected socket', () => {

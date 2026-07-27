@@ -160,11 +160,31 @@ interface RawData {
   exchange?: string;
   ltp?: number;
   last_price?: number;
+  last_quantity?: number;
   last_trade_quantity?: number;
   ltq?: number;
-  volume?: number; // cumulative day volume (Quote mode)
+  volume?: number; // cumulative day volume (Quote and Depth modes)
+  oi?: number;
+  open_interest?: number;
+  total_buy_quantity?: number;
+  total_sell_quantity?: number;
+  average_price?: number;
+  atp?: number;
   timestamp?: number | string;
   depth?: { buy?: DepthLevel[]; sell?: DepthLevel[] };
+}
+
+/**
+ * Last-traded quantity, under whichever name the broker adapter emits.
+ *
+ * OpenAlgo's adapters never settled on one spelling: `last_quantity` is by far
+ * the most common (Zerodha, Angel's snap-quote mode, Dhan, Flattrade, Shoonya
+ * and the rest of the Noren family), Angel's quote mode and the Five Paisa /
+ * Upstox adapters say `last_trade_quantity`, and the XTS-derived ones say `ltq`.
+ * Reading only one of the three silently zeroed the order flow on most brokers.
+ */
+function lastTradedQty(d: RawData): number | undefined {
+  return d.last_quantity ?? d.last_trade_quantity ?? d.ltq;
 }
 interface RawMsg {
   type?: string;
@@ -204,11 +224,27 @@ export function parseMessage(raw: unknown): { kind: 'ltp'; event: LtpEvent } | {
     const bids = (d.depth.buy ?? []).map((b) => ({ price: b.price, qty: b.quantity }));
     const asks = (d.depth.sell ?? []).map((a) => ({ price: a.price, qty: a.quantity }));
     const ltp = d.ltp ?? d.last_price ?? (bids[0]?.price ?? 0);
-    return { kind: 'depth', symbol, exchange, depth: { bids, asks, ltp } };
+    // A tradeable symbol subscribes to Depth alone (its payload embeds the LTP),
+    // so everything a consumer needs per-message has to ride along here: the
+    // traded quantity for the live order flow, and open interest / book totals /
+    // VWAP for the exact side of a direction readout. Left `undefined` when the
+    // adapter does not send them — a missing field is not a zero.
+    return {
+      kind: 'depth', symbol, exchange,
+      depth: {
+        bids, asks, ltp,
+        ltq: lastTradedQty(d),
+        volume: d.volume,
+        oi: d.oi ?? d.open_interest,
+        totalBuyQty: d.total_buy_quantity,
+        totalSellQty: d.total_sell_quantity,
+        atp: d.average_price ?? d.atp,
+      },
+    };
   }
   const price = d.ltp ?? d.last_price;
   if (typeof price === 'number') {
-    return { kind: 'ltp', event: { symbol, exchange, ltp: price, ltq: d.last_trade_quantity ?? d.ltq, volume: d.volume, timeSec: toSec(d.timestamp) } };
+    return { kind: 'ltp', event: { symbol, exchange, ltp: price, ltq: lastTradedQty(d), volume: d.volume, timeSec: toSec(d.timestamp) } };
   }
   return null;
 }

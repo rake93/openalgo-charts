@@ -26,6 +26,8 @@ interface HistoryRow {
   low: number;
   close: number;
   volume?: number;
+  /** OpenAlgo's history service guarantees this column, zero-filled when absent. */
+  oi?: number;
 }
 
 interface HistoryResponse {
@@ -61,6 +63,9 @@ export function mapHistoryResponse(json: HistoryResponse): Bar[] {
       low: r.low,
       close: r.close,
       volume: r.volume,
+      // Zero-filled by the history service for instruments without open interest,
+      // so a 0 means "none" and is dropped rather than carried as a real level.
+      ...(typeof r.oi === 'number' && r.oi > 0 ? { oi: r.oi } : {}),
     });
   }
   return bars.sort((a, b) => a.time - b.time);

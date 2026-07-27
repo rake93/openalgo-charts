@@ -34,7 +34,23 @@ export interface MarketDepth {
   bids: DepthLevel[];
   asks: DepthLevel[];
   ltp: number;
+  /**
+   * Last-traded quantity. Sticky — brokers repeat the previous trade's size on
+   * every book update, so it is the size of *a* trade, not the quantity traded
+   * since the last message. Where the feed also carries `volume`, difference
+   * that instead to get a true per-message traded quantity.
+   */
   ltq?: number;
+  /** Cumulative day volume, when the broker's depth payload carries it. */
+  volume?: number;
+  /** Open interest. Derivatives only — absent on equity and indices. */
+  oi?: number;
+  /** Total *pending* buy quantity across the book, as the exchange reports it. */
+  totalBuyQty?: number;
+  /** Total pending sell quantity. */
+  totalSellQty?: number;
+  /** Average traded price for the day — the exchange's own VWAP. */
+  atp?: number;
 }
 
 export type OrderSide = 'BUY' | 'SELL';
