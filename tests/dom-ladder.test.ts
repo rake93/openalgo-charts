@@ -87,6 +87,36 @@ describe('DomLadder primitive', () => {
     expect(ladder.tier()).toBe('none');
   });
 
+  // Bare columns of numbers give no clue which side is which, nor how the two
+  // sides compare in aggregate.
+  it('labels the two sides and totals each one', () => {
+    const d = depth(5);
+    const ladder = new DomLadder({ tickSize: 0.05, width: 96 });
+    ladder.setDepth(d);
+    const { ctx, rec } = makeCtx();
+    ladder.draw(ctx, rc());
+
+    const texts = rec.ops.filter((o) => o.type === 'fillText').map((o) => o.text);
+    expect(texts).toContain('BID');
+    expect(texts).toContain('ASK');
+
+    // Totals cover the whole book in the payload, not only the rows on screen.
+    const bidTotal = d.bids.reduce((s, l) => s + l.qty, 0);
+    const askTotal = d.asks.reduce((s, l) => s + l.qty, 0);
+    expect(texts).toContain(String(bidTotal));
+    expect(texts).toContain(String(askTotal));
+  });
+
+  it('can be drawn without the header and totals', () => {
+    const ladder = new DomLadder({ tickSize: 0.05, showHeader: false, showTotals: false });
+    ladder.setDepth(depth(5));
+    const { ctx, rec } = makeCtx();
+    ladder.draw(ctx, rc());
+    const texts = rec.ops.filter((o) => o.type === 'fillText').map((o) => o.text);
+    expect(texts).not.toContain('BID');
+    expect(texts.length).toBeGreaterThan(0); // per-row quantities still drawn
+  });
+
   it('hit-tests a price level inside the strip with side', () => {
     const r = rc();
     const ladder = new DomLadder({ tickSize: 0.05, width: 96 });

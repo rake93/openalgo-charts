@@ -39,6 +39,23 @@ describe('bestHit', () => {
     expect(bestHit([a, b])!.externalId).toBe('b'); // tie → top wins
     expect(bestHit([a, b, c])!.externalId).toBe('c'); // nearest wins
   });
+
+  // A pane legend's row and a floating control both claim their whole rectangle
+  // at distance 0 on the top layer, so the winner used to be whichever primitive
+  // was registered first. That left the Buy/Sell panel dead wherever it overlapped
+  // a legend — the legend swallowed both the hover and the press.
+  it('breaks an exact tie on priority, so a control beats a passive backdrop', () => {
+    const backdrop = { externalId: 'legend::row', zOrder: 'top' as const, distance: 0 };
+    const control = { externalId: 'trade:move', zOrder: 'top' as const, distance: 0, priority: 1 };
+    expect(bestHit([backdrop, control])!.externalId).toBe('trade:move');
+    expect(bestHit([control, backdrop])!.externalId).toBe('trade:move');
+  });
+
+  it('does not let priority override a genuinely nearer hit', () => {
+    const near = { externalId: 'near', zOrder: 'normal' as const, distance: 1 };
+    const farButEager = { externalId: 'far', zOrder: 'top' as const, distance: 20, priority: 5 };
+    expect(bestHit([near, farButEager])!.externalId).toBe('near');
+  });
 });
 
 describe('PriceLine primitive', () => {

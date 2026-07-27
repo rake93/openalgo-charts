@@ -7,7 +7,7 @@
  * update cheaply on every tick (`setPrices` / `setMark`).
  */
 import type { IPrimitive, PrimitiveHost, PrimitiveRenderContext, PrimitiveHit, ZOrder } from './primitive';
-import { contrastText, roundRectPath, shade } from '../render/pill';
+import { contrastText, roundRectPath, shade, withAlpha } from '../render/pill';
 import type { WatermarkPosition } from './watermark';
 
 export interface BuySellButtonsOptions {
@@ -49,6 +49,12 @@ const RADIUS = 7;
 /** Below ~0.6 the labels stop being legible; above 1.5 it dominates the pane. */
 const MIN_SCALE = 0.6;
 const MAX_SCALE = 1.5;
+/**
+ * Drag handle at the left of the panel. Every other zone places or edits an
+ * order, so there is nowhere safe to grab the panel by — without a dedicated grip
+ * a stray drag would be a trade. Scales with the panel like every other width.
+ */
+const GRIP_W = 14;
 
 export class BuySellButtons implements IPrimitive {
   private readonly _id: string;
@@ -58,6 +64,7 @@ export class BuySellButtons implements IPrimitive {
   private readonly _scale: number;
   private readonly _btnW: number;
   private readonly _qtyW: number;
+  private readonly _gripW: number;
   private readonly _h: number;
   private readonly _buyLabel: string;
   private readonly _sellLabel: string;
@@ -72,6 +79,10 @@ export class BuySellButtons implements IPrimitive {
   private _sellRect: Rect | null = null;
   private _buyRect: Rect | null = null;
   private _qtyRect: Rect | null = null;
+  private _gripRect: Rect | null = null;
+  /** Where the user dragged the panel, relative to its docked corner. */
+  private _ox = 0;
+  private _oy = 0;
 
   public constructor(options: BuySellButtonsOptions = {}) {
     this._id = options.id ?? 'trade';
@@ -85,6 +96,7 @@ export class BuySellButtons implements IPrimitive {
     this._scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, options.scale ?? 1));
     this._btnW = BTN_W * this._scale;
     this._qtyW = QTY_W * this._scale;
+    this._gripW = GRIP_W * this._scale;
     this._h = H * this._scale;
     this._qty = options.qty !== undefined ? String(options.qty) : '';
     this._buyColor = options.buyColor;
@@ -115,32 +127,59 @@ export class BuySellButtons implements IPrimitive {
     this._host?.requestUpdate();
   }
 
+  /**
+   * Move the panel by `x`/`y` media px from its docked corner. The offset is
+   * clamped at draw time, not here, because the clamp depends on the plot size.
+   */
+  public setOffset(x: number, y: number): void {
+    this._ox = x;
+    this._oy = y;
+    this._host?.requestUpdate();
+  }
+
+  /** The current drag offset, for persisting into a saved layout. */
+  public offset(): { x: number; y: number } {
+    return { x: this._ox, y: this._oy };
+  }
+
   private _origin(plotW: number, plotH: number): { x: number; y: number; w: number } {
-    const w = this._btnW * 2 + this._qtyW + GAP * 2;
+    const w = this._gripW + GAP + this._btnW * 2 + this._qtyW + GAP * 2;
     const left = this._mx;
     const right = plotW - this._mx - w;
     const top = this._my;
     const bottom = plotH - this._my - this._h;
+    let x: number;
+    let y: number;
     switch (this._position) {
-      case 'top-right': return { x: right, y: top, w };
-      case 'bottom-left': return { x: left, y: bottom, w };
-      case 'bottom-right': return { x: right, y: bottom, w };
-      case 'center': return { x: (plotW - w) / 2, y: (plotH - this._h) / 2, w };
+      case 'top-right': x = right; y = top; break;
+      case 'bottom-left': x = left; y = bottom; break;
+      case 'bottom-right': x = right; y = bottom; break;
+      case 'center': x = (plotW - w) / 2; y = (plotH - this._h) / 2; break;
       case 'top-left':
-      default: return { x: left, y: top, w };
+      default: x = left; y = top; break;
     }
+    // Always leave enough of the panel on the plot to grab it again: a drag that
+    // could push it off screen would strand it there with no way back.
+    const keep = this._gripW + this._btnW / 2;
+    return {
+      x: Math.max(-(w - keep), Math.min(plotW - keep, x + this._ox)),
+      y: Math.max(0, Math.min(plotH - this._h, y + this._oy)),
+      w,
+    };
   }
 
   public draw(ctx: CanvasRenderingContext2D, rc: PrimitiveRenderContext): void {
-    this._sellRect = this._buyRect = this._qtyRect = null;
+    this._sellRect = this._buyRect = this._qtyRect = this._gripRect = null;
     const dpr = rc.dpr;
     const o = this._origin(rc.plotWidth, rc.plotHeight);
     const sell = this._sellColor ?? rc.theme.sell;
     const buy = this._buyColor ?? rc.theme.buy;
     // media-px hit rects
-    this._sellRect = { x: o.x, y: o.y, w: this._btnW, h: this._h };
-    this._qtyRect = { x: o.x + this._btnW + GAP, y: o.y, w: this._qtyW, h: this._h };
-    this._buyRect = { x: o.x + this._btnW + this._qtyW + GAP * 2, y: o.y, w: this._btnW, h: this._h };
+    const bx = o.x + this._gripW + GAP;
+    this._gripRect = { x: o.x, y: o.y, w: this._gripW, h: this._h };
+    this._sellRect = { x: bx, y: o.y, w: this._btnW, h: this._h };
+    this._qtyRect = { x: bx + this._btnW + GAP, y: o.y, w: this._qtyW, h: this._h };
+    this._buyRect = { x: bx + this._btnW + this._qtyW + GAP * 2, y: o.y, w: this._btnW, h: this._h };
 
     ctx.save();
     // subtle drop shadow so the panel reads as a floating control
@@ -151,6 +190,7 @@ export class BuySellButtons implements IPrimitive {
     const hovered = (r: Rect | null, id: string): boolean =>
       r !== null && rc.hoverId === `${this._id}:${id}`;
 
+    this._drawGrip(ctx, this._gripRect, dpr, rc, hovered(this._gripRect, 'move'));
     this._drawButton(ctx, this._sellRect, dpr, hovered(this._sellRect, 'sell') ? shade(sell, 0.12) : sell,
       this._sellLabel, this._showPrices ? this._fmt(rc, this._bid) : '', 'left');
     // qty chip (neutral surface)
@@ -158,6 +198,38 @@ export class BuySellButtons implements IPrimitive {
     this._drawChip(ctx, this._qtyRect, dpr, qtyFill, this._qty || '—', rc.theme.axisText);
     this._drawButton(ctx, this._buyRect, dpr, hovered(this._buyRect, 'buy') ? shade(buy, 0.12) : buy,
       this._buyLabel, this._showPrices ? this._fmt(rc, this._ask) : '', 'right');
+    ctx.restore();
+  }
+
+  /**
+   * The drag handle: a neutral tab with two columns of dots, so it reads as
+   * something to grab rather than a fourth thing to press.
+   */
+  private _drawGrip(
+    ctx: CanvasRenderingContext2D, r: Rect | null, dpr: number,
+    rc: PrimitiveRenderContext, hover: boolean,
+  ): void {
+    if (r === null) return;
+    const surface = rc.theme.background === 'transparent' ? '#2a2f3a' : rc.theme.grid;
+    ctx.fillStyle = hover ? shade(surface, 0.18) : surface;
+    roundRectPath(ctx, r.x * dpr, r.y * dpr, r.w * dpr, r.h * dpr, RADIUS * this._scale * dpr);
+    ctx.fill();
+
+    ctx.save();
+    ctx.shadowColor = 'transparent';
+    ctx.fillStyle = withAlpha(contrastText(surface), hover ? 0.85 : 0.5);
+    const cx = (r.x + r.w / 2) * dpr;
+    const cy = (r.y + r.h / 2) * dpr;
+    // Dots scale with the panel, like the corner radius and the type do.
+    const d = 1.4 * this._scale * dpr;
+    const gap = 4 * this._scale * dpr;
+    for (let row = -1; row <= 1; row++) {
+      for (const col of [-1, 1]) {
+        ctx.beginPath();
+        ctx.arc(cx + (col * gap) / 2, cy + row * gap, d, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
     ctx.restore();
   }
 
@@ -223,9 +295,18 @@ export class BuySellButtons implements IPrimitive {
   public hitTest(x: number, y: number, _rc: PrimitiveRenderContext): PrimitiveHit | null {
     const inside = (r: Rect | null): boolean =>
       r !== null && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
-    if (inside(this._buyRect)) return { externalId: `${this._id}:buy`, zOrder: 'top', distance: 0, cursor: 'pointer' };
-    if (inside(this._sellRect)) return { externalId: `${this._id}:sell`, zOrder: 'top', distance: 0, cursor: 'pointer' };
-    if (inside(this._qtyRect)) return { externalId: `${this._id}:qty`, zOrder: 'top', distance: 0, cursor: 'pointer' };
+    // The panel floats over the plot and can be dragged anywhere, including over a
+    // pane legend — which claims its whole row at distance 0. Priority makes this
+    // panel win those ties, so it never goes dead by being parked on a legend.
+    const P = 10;
+    if (inside(this._buyRect)) return { externalId: `${this._id}:buy`, zOrder: 'top', distance: 0, cursor: 'pointer', priority: P };
+    if (inside(this._sellRect)) return { externalId: `${this._id}:sell`, zOrder: 'top', distance: 0, cursor: 'pointer', priority: P };
+    if (inside(this._qtyRect)) return { externalId: `${this._id}:qty`, zOrder: 'top', distance: 0, cursor: 'pointer', priority: P };
+    // The grip arms a two-axis drag; the rest of the panel stays click-only so a
+    // slip while pressing BUY cannot turn into a drag.
+    if (inside(this._gripRect)) {
+      return { externalId: `${this._id}:move`, zOrder: 'top', distance: 0, cursor: 'move', draggable: true, priority: P };
+    }
     return null;
   }
 }

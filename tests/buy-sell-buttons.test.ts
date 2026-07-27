@@ -62,6 +62,46 @@ describe('BuySellButtons', () => {
     }
   });
 
+  // All three zones are actions, so dragging needs a handle of its own.
+  it('offers a drag grip that arms a drag rather than an order', () => {
+    const p = new BuySellButtons({ id: 'trade', position: 'top-left', margin: 12 });
+    p.setMark(100);
+    p.draw(makeCtx().ctx, rc());
+    const hit = p.hitTest(18, 30, rc()); // inside the grip, left of SELL
+    expect(hit?.externalId).toBe('trade:move');
+    expect(hit?.draggable).toBe(true);
+    expect(hit?.cursor).toBe('move');
+  });
+
+  it('moves every zone together when the panel is offset', () => {
+    const p = new BuySellButtons({ id: 'trade', position: 'top-left', margin: 12 });
+    p.setMark(100);
+    p.draw(makeCtx().ctx, rc());
+    p.setOffset(100, 60);
+    p.draw(makeCtx().ctx, rc());
+
+    expect(p.hitTest(18, 30, rc())).toBeNull(); // nothing left behind
+    expect(p.hitTest(118, 90, rc())?.externalId).toBe('trade:move');
+    expect(p.hitTest(130, 90, rc())?.externalId).toBe('trade:sell');
+    expect(p.offset()).toEqual({ x: 100, y: 60 });
+  });
+
+  it('keeps the panel on the plot however far it is dragged', () => {
+    const p = new BuySellButtons({ id: 'trade', position: 'top-left', margin: 12 });
+    p.setMark(100);
+    p.draw(makeCtx().ctx, rc());
+    p.setOffset(10_000, 10_000);
+    p.draw(makeCtx().ctx, rc());
+
+    let found = false;
+    for (let x = 0; x < 600 && !found; x += 4) {
+      for (let y = 0; y < 400 && !found; y += 4) {
+        if (p.hitTest(x, y, rc()) !== null) found = true;
+      }
+    }
+    expect(found).toBe(true);
+  });
+
   it('setQty / setColors request a repaint via the host', () => {
     let updates = 0;
     const p = new BuySellButtons();

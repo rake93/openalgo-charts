@@ -84,10 +84,21 @@ export interface DomLadderOptions {
   /** Max rows drawn per frame (virtualization cap). */
   maxRows: number;
   rowHeight: number;
+  /** Name the two sides across the top of the strip. */
+  showHeader: boolean;
+  /**
+   * Sum each side across the foot of the strip.
+   *
+   * Totals cover **every level in the payload**, not only the rows currently on
+   * screen: virtualization drops rows far from the last price, and a total that
+   * silently changed as the chart scrolled would be worse than no total at all.
+   */
+  showTotals: boolean;
 }
 
 export const DEFAULT_DOM_LADDER_OPTIONS: DomLadderOptions = {
   tickSize: 0.05, width: 96, groupBy: 1, maxRows: 60, rowHeight: 14,
+  showHeader: true, showTotals: true,
 };
 
 export class DomLadder implements IPrimitive {
@@ -179,6 +190,47 @@ export class DomLadder implements IPrimitive {
         ctx.lineWidth = Math.max(1, Math.round(dpr));
         ctx.strokeRect(bidHover ? x0 + 0.5 : mid + 0.5, yc - rowH / 2 + 0.5, stripW / 2 - 1, rowH - 2);
       }
+    }
+
+    // Header and totals last, on opaque backings, so a row that reaches the top or
+    // bottom edge cannot be mistaken for either of them.
+    const surface = rc.theme.background === 'transparent' ? '#808080' : rc.theme.background;
+    const band = (y: number): void => {
+      ctx.fillStyle = withAlpha(surface, 0.93);
+      ctx.fillRect(x0, y, stripW, rowH);
+      ctx.strokeStyle = withAlpha(rc.theme.axisLine, 0.5);
+      ctx.lineWidth = Math.max(1, Math.round(dpr));
+      ctx.beginPath();
+      ctx.moveTo(x0, Math.round(y) + 0.5);
+      ctx.lineTo(x0 + stripW, Math.round(y) + 0.5);
+      ctx.stroke();
+    };
+
+    if (this._opts.showHeader) {
+      band(0);
+      ctx.fillStyle = withAlpha(contrastText(surface), 0.6);
+      ctx.textAlign = 'left';
+      ctx.fillText('BID', x0 + 2 * dpr, rowH / 2);
+      ctx.textAlign = 'right';
+      ctx.fillText('ASK', x0 + stripW - 2 * dpr, rowH / 2);
+    }
+
+    if (this._opts.showTotals) {
+      let bidTotal = 0;
+      let askTotal = 0;
+      for (const l of this._depth.bids) bidTotal += l.qty;
+      for (const l of this._depth.asks) askTotal += l.qty;
+      const y = rc.plotHeight * dpr - rowH;
+      band(y);
+      // The heavier side is emphasised; the lighter one stays muted, so which way
+      // the book leans reads without doing the arithmetic.
+      const lean = bidTotal === askTotal ? 0 : bidTotal > askTotal ? 1 : -1;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = lean > 0 ? withAlpha(rc.theme.buy, 0.95) : withAlpha(contrastText(surface), 0.55);
+      ctx.fillText(String(bidTotal), x0 + 2 * dpr, y + rowH / 2);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = lean < 0 ? withAlpha(rc.theme.sell, 0.95) : withAlpha(contrastText(surface), 0.55);
+      ctx.fillText(String(askTotal), x0 + stripW - 2 * dpr, y + rowH / 2);
     }
     ctx.restore();
   }
