@@ -51,6 +51,41 @@ describe('takeScreenshot composites every layer', () => {
     // 2 panes × (base + top overlay) = 4 drawImage calls
     expect(shot.__rec.count('drawImage')).toBe(4);
   });
+
+  // The output is sized from the *current* pixel ratio, but the pane canvases
+  // hold whatever ratio they were last laid out at. Those diverge when the ratio
+  // changes without a resize: dragging the window to a differently-scaled
+  // monitor leaves the CSS size identical, so no ResizeObserver fires and no
+  // relayout happens. Drawing each layer at its natural size then filled only
+  // the top-left corner and left the rest of the PNG empty.
+  it('fills the whole output even when the pixel ratio moved since layout', () => {
+    const doc = recordingDoc();
+    const container = doc.createElement('div') as unknown as Record<string, unknown>;
+    container.clientWidth = 800; container.clientHeight = 600;
+    let ratio = 1;
+    const chart = new Chart(container as unknown as HTMLElement, {
+      document: doc, pixelRatio: () => ratio, raf: { schedule: () => 0, cancel: () => {} },
+    });
+    chart.addSeries('candlestick').setData([bar(1000, 10), bar(1060, 11)]);
+
+    ratio = 2; // moved to a 2x monitor; CSS size unchanged, so no relayout fires
+    const shot = chart.takeScreenshot() as unknown as {
+      width: number; height: number; __rec: RecordingContext;
+    };
+    expect(shot.width).toBe(1600);
+    expect(shot.height).toBe(1200);
+
+    const draws = shot.__rec.ops.filter((o) => o.type === 'drawImage');
+    expect(draws.length).toBeGreaterThan(0);
+    for (const d of draws) {
+      // Every layer needs an explicit destination rect spanning the output width;
+      // a natural-size draw (2 args) is what left the PNG mostly blank.
+      expect(d.args.length, 'layer drawn without a destination rect').toBe(4);
+      expect(d.args[2]).toBe(shot.width);
+    }
+    // Between them the layers must cover the full height.
+    expect(Math.max(...draws.map((d) => d.args[1] + d.args[3]))).toBe(shot.height);
+  });
 });
 
 describe('price <-> coordinate conversion', () => {

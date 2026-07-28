@@ -808,8 +808,16 @@ export class Chart {
     const layout = this._paneLayout();
     for (let i = 0; i < this._panes.length; i++) {
       const y = Math.round((layout[i]?.top ?? 0) * dpr);
-      g.drawImage(this._panes[i].base.element, 0, y);
-      g.drawImage(this._panes[i].top.element, 0, y);
+      const h = Math.round((layout[i]?.height ?? this._height) * dpr);
+      // Each layer goes into an explicit destination rect rather than being drawn
+      // at its natural size. The output is sized from the *current* pixel ratio,
+      // but a pane canvas holds whatever ratio it was last laid out at, and the
+      // two diverge whenever the ratio changes without a resize — dragging the
+      // window to a differently-scaled monitor leaves the CSS size identical, so
+      // no ResizeObserver fires and no relayout happens. Drawn at natural size
+      // that filled the top-left corner and left the rest of the image blank.
+      g.drawImage(this._panes[i].base.element, 0, y, out.width, h);
+      g.drawImage(this._panes[i].top.element, 0, y, out.width, h);
     }
     return out;
   }
@@ -1991,9 +1999,30 @@ export class Chart {
     try {
       const canvas = this.takeScreenshot();
       const a = this._doc.createElement('a');
-      a.href = canvas.toDataURL('image/png');
       a.download = filename;
-      a.click();
+      // The anchor must be in the document before it is clicked. A detached one
+      // happens to work in Chrome but is ignored by Firefox, so the button did
+      // nothing at all there.
+      const attach = (href: string, revoke?: () => void): void => {
+        a.href = href;
+        this._doc.body?.appendChild(a);
+        a.click();
+        a.remove();
+        if (revoke !== undefined) setTimeout(revoke, 0);
+      };
+      // Prefer a blob URL over `toDataURL`. A full-resolution chart on a hi-dpi
+      // display is easily several MB as base64, and browsers cap how large a
+      // `data:` URL they will download — past that the file arrives truncated or
+      // not at all. A blob URL has no such limit and skips the base64 entirely.
+      if (typeof canvas.toBlob === 'function' && typeof URL?.createObjectURL === 'function') {
+        canvas.toBlob((blob) => {
+          if (blob === null) return;
+          const url = URL.createObjectURL(blob);
+          attach(url, () => URL.revokeObjectURL(url));
+        }, 'image/png');
+        return;
+      }
+      attach(canvas.toDataURL('image/png'));
     } catch { /* ignore (tainted canvas / no DOM) */ }
   }
 

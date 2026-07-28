@@ -61,7 +61,12 @@ export class RecordingContext {
   public translate(x: number, y: number): void { this.ops.push({ type: 'translate', args: [x, y] }); }
   public clearRect(x: number, y: number, w: number, h: number): void { this.ops.push({ type: 'clearRect', args: [x, y, w, h] }); }
   public scale(): void { this.ops.push({ type: 'scale', args: [] }); }
-  public drawImage(_img: unknown, x: number, y: number): void { this.ops.push({ type: 'drawImage', args: [x, y] }); }
+  // Destination width/height are recorded too: a composite that draws each layer
+  // at its natural size rather than into an explicit destination rect is exactly
+  // how a screenshot ends up mostly blank once the pixel ratio has moved.
+  public drawImage(_img: unknown, x: number, y: number, w?: number, h?: number): void {
+    this.ops.push({ type: 'drawImage', args: w === undefined ? [x, y] : [x, y, w, h as number] });
+  }
 
   public count(type: string): number {
     return this.ops.filter((o) => o.type === type).length;
