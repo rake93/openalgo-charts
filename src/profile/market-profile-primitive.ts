@@ -15,7 +15,7 @@
  * `minLetterHeight`, so zooming through the threshold reads as one continuous
  * change instead of a jump.
  */
-import type { IPrimitive, PrimitiveHit, PrimitiveHost, PrimitiveRenderContext, ZOrder } from 'openalgo-charts';
+import type { IPrimitive, PrimitiveHost, PrimitiveRenderContext, ZOrder } from 'openalgo-charts';
 import type { MarketProfileResult, MarketProfileSessionResult, MarketProfileLevel } from './market-profile';
 import { nakedLevels } from './market-profile';
 
@@ -230,13 +230,16 @@ export class MarketProfile implements IPrimitive {
     this._host?.requestUpdate();
   }
 
-  /** Report the session under the pointer so a host can show a tooltip. */
-  public hitTest(x: number, y: number): PrimitiveHit | null {
-    void y;
-    const box = this._boxes.find((b) => x >= b.x0 && x <= b.x1);
-    if (box === undefined) return null;
-    return { externalId: `mp:${box.index}`, zOrder: 'normal', distance: 0, cursor: 'crosshair' };
-  }
+  // Deliberately no `hitTest`. It used to claim `distance: 0` for every point
+  // inside a session's x-range — a whole trading day's width, at any height,
+  // because it ignored `y`. `bestHit` sorts by distance first, so that area claim
+  // beat every drawing, order line and price line beneath it: a fib level could
+  // only be selected by clicking within a pixel of it, and on a chart with
+  // Studies switched on a shape could not be re-selected, dragged or deleted.
+  //
+  // Nothing consumed the `mp:<index>` id it returned. The hover readout comes
+  // from `hoverAt()` driven by the crosshair and is unaffected, so the claim
+  // bought a `crosshair` cursor and cost the drawing tier its interactivity.
 
   /**
    * Full hover payload for `(x, y)` in media px. `rc` defaults to the context of

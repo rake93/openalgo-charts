@@ -522,19 +522,20 @@ describe('profile primitives render', () => {
     expect(fp.autoscaleInfo()).toEqual({ min: 100, max: 101 });
   });
 
-  it('Footprint hit-tests a column and reports its stats', () => {
+  it('Footprint reports the stats of the column under the pointer', () => {
     const r = rc();
     const fp = new Footprint({ tickSize: 0.05 });
     fp.setBars([computeFootprint(1, [{ price: 100, qty: 7, side: 'ask' }], 0.05)]);
     const { ctx } = makeCtx();
-    fp.draw(ctx, r);                       // hit-testing needs the drawn geometry
+    fp.draw(ctx, r);                       // the readout needs the drawn geometry
     const x = r.timeScale.indexToX(0);
-    const hit = fp.hitTest(x, 50);
-    expect(hit?.externalId).toBe('footprint:1');
+    // `hitTest` is deliberately gone: it claimed the full height of every column
+    // at distance 0, which shut out any drawing laid over the footprint. The
+    // readout was always `hoverAt` on the crosshair, and that is unaffected.
     const hover = fp.hoverAt(x, r.priceScale.priceToY(100), r);
     expect(hover?.stats.volume).toBe(7);
     expect(hover?.cell?.askVol).toBe(7);
-    expect(fp.hitTest(-500, 50)).toBeNull();
+    expect(fp.hoverAt(-500, 50, r)).toBeNull();
   });
 
   it('Footprint hoverAt reuses the last draw context when none is passed', () => {

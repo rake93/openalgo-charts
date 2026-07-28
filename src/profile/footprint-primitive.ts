@@ -15,7 +15,7 @@
  * the previous version hardcoded twelve colours and could only be restyled by
  * rebuilding the chart.
  */
-import type { IPrimitive, PrimitiveHost, PrimitiveRenderContext, PrimitiveHit, ZOrder } from 'openalgo-charts';
+import type { IPrimitive, PrimitiveHost, PrimitiveRenderContext, ZOrder } from 'openalgo-charts';
 import type { FootprintBar, FootprintCell } from './profile-model';
 import { contrastText, parseColor, withAlpha } from '../render/pill';
 
@@ -171,7 +171,6 @@ export class Footprint implements IPrimitive {
   private _rowH = 0;
   /** Last context the primitive drew with; see `draw`. */
   private _rc: PrimitiveRenderContext | null = null;
-  private _plotH = 0;
 
   public constructor(opts: Partial<FootprintOptions> = {}) {
     this._opts = { ...DEFAULT_FOOTPRINT_OPTIONS, ...opts };
@@ -292,7 +291,6 @@ export class Footprint implements IPrimitive {
     const width = this._columnWidth(rc);
     const plotH = rc.plotHeight * dpr;
     const statsH = o.statsRows.length * o.statsRowHeight * dpr;
-    this._plotH = rc.plotHeight;
     this._cols = [];
 
     const cols: Column[] = [];
@@ -615,16 +613,11 @@ export class Footprint implements IPrimitive {
     return signed(v);
   }
 
-  /**
-   * Report the column (and row) under the pointer so a host can show a tooltip.
-   * Returns a hit id of `footprint:<time>` — the payload is on `hoverAt`.
-   */
-  public hitTest(x: number, y: number): PrimitiveHit | null {
-    const col = this._cols.find((c) => x >= c.x0 && x <= c.x1);
-    if (col === undefined) return null;
-    if (y < 0 || y > this._plotH) return null;
-    return { externalId: `footprint:${col.time}`, zOrder: 'normal', distance: 0, cursor: 'crosshair' };
-  }
+  // Deliberately no `hitTest`, for the same reason as the market profile: it
+  // claimed `distance: 0` for the full height of every column, and `bestHit`
+  // sorts by distance first, so it shut out every drawing and order line drawn
+  // over the footprint. Nothing consumed the `footprint:<time>` id; the tooltip
+  // payload comes from `hoverAt()` on the crosshair and is unaffected.
 
   /**
    * Full hover payload for `(x, y)` in media px, for a host-drawn tooltip.

@@ -150,19 +150,21 @@ describe('TPO letter / brick auto transition', () => {
   });
 });
 
-describe('MarketProfile hit-testing', () => {
+describe('MarketProfile hover readout', () => {
   it('maps a pointer back to the session row under it', () => {
     const { result, t0 } = makeResult();
     const mp = new MarketProfile(result);
     const { ctx } = alphaRecorder();
     const rc = makeScaledRc(t0, t0 + 1800, 20);
-    mp.draw(ctx, rc);                       // hit-testing needs drawn geometry
+    mp.draw(ctx, rc);                       // the readout needs drawn geometry
     const x = 150;                          // inside the session box (102..298)
-    const hit = mp.hitTest(x, 50);
-    expect(hit?.externalId).toBe('mp:0');
+    // `hitTest` is deliberately gone: it claimed the entire session box at
+    // distance 0 and so shut out every drawing and order line over it. The
+    // readout was always `hoverAt`, driven by the crosshair — that is what
+    // this covers, and it is unaffected.
     const hover = mp.hoverAt(x, rc.priceScale.priceToY(110));
     expect(hover?.price).toBe(110);
     expect(hover?.level.letters).toBe('AB');
-    expect(mp.hitTest(-500, 50)).toBeNull();
+    expect(mp.hoverAt(-500, 50)).toBeNull();
   });
 });
