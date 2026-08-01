@@ -29,6 +29,12 @@ export interface SeriesMarker {
   color: string;
   text?: string;
   id?: string;
+  /**
+   * Shrink the glyph to the current bar spacing (default `true`). Set `false`
+   * when `size` is meant literally and overlap is acceptable -- see
+   * `effectiveMarkerPx`.
+   */
+  clampToBarSpacing?: boolean;
 }
 
 const SIZE_PX: Record<MarkerSize, number> = { tiny: 6, small: 9, medium: 12, big: 16 };
@@ -38,8 +44,20 @@ export function markerSizePx(size: MarkerSize): number {
   return SIZE_PX[size];
 }
 
-/** Effective glyph px, clamped so it never exceeds the current bar spacing. */
-export function effectiveMarkerPx(size: MarkerSize, barSpacing: number): number {
+/**
+ * Effective glyph px. By default the glyph is clamped so it never exceeds the
+ * current bar spacing, which keeps dense charts from turning into overlapping
+ * mush.
+ *
+ * That density clamp also makes `size` inert for callers who mean it literally:
+ * at 1653 bars in ~1180px the spacing is ~0.7, `floor()` is 0, and every marker
+ * collapses onto the 4px floor no matter how large it was authored. Pass
+ * `clamp: false` to honour the authored size instead -- what a Pine
+ * `plotshape(size=...)` port needs, where sizes are absolute and glyphs are
+ * expected to overlap.
+ */
+export function effectiveMarkerPx(size: MarkerSize, barSpacing: number, clamp = true): number {
+  if (!clamp) return SIZE_PX[size];
   return Math.max(4, Math.min(SIZE_PX[size], Math.floor(barSpacing)));
 }
 
@@ -162,7 +180,7 @@ export class SeriesMarkers implements IPrimitive {
       const index = rc.dataLayer.timeToIndex(m.time);
       if (index === undefined || index < range.from - 1 || index > range.to + 1) continue;
       const bar = barByTime.get(m.time);
-      const px = effectiveMarkerPx(m.size, rc.timeScale.barSpacing) * rc.dpr;
+      const px = effectiveMarkerPx(m.size, rc.timeScale.barSpacing, m.clampToBarSpacing ?? true) * rc.dpr;
       const x = rc.timeScale.indexToX(index) * rc.dpr;
       const stack = stackByTime.get(m.time) ?? 0;
       const gap = (px + 4 * rc.dpr) * stack;

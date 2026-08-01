@@ -150,6 +150,26 @@ describe('SeriesMarkers', () => {
     expect(effectiveMarkerPx('tiny', 50)).toBe(6); // not enlarged
   });
 
+  /**
+   * The density clamp makes `size` inert for anyone who means it literally. A
+   * chart showing 1653 bars in ~1180px has barSpacing ~0.7, so `floor()` is 0
+   * and EVERY marker lands on the 4px floor however large it was authored --
+   * and even at a roomy 5px/bar a `big` marker is still capped at 5px. Callers
+   * porting Pine `plotshape(size=...)`, whose sizes are absolute and overlap
+   * freely, need the authored size honoured.
+   *
+   * Opt-IN by absence: the clamp stays on unless a caller passes `false`, so no
+   * existing caller changes behaviour.
+   */
+  it('honors the authored size when the bar-spacing clamp is opted out', () => {
+    expect(effectiveMarkerPx('big', 0.7, false)).toBe(16);
+    expect(effectiveMarkerPx('big', 5, false)).toBe(16);
+    expect(effectiveMarkerPx('tiny', 0.7, false)).toBe(6);
+    // Default and explicit-true both keep the density clamp.
+    expect(effectiveMarkerPx('big', 5)).toBe(5);
+    expect(effectiveMarkerPx('big', 5, true)).toBe(5);
+  });
+
   it('draws one glyph per visible marker and hit-tests it', () => {
     const { rc, seriesId } = makeRc();
     const m = new SeriesMarkers(seriesId);
